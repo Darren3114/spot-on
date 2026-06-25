@@ -1,4 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { track } from "@vercel/analytics";
+
+// Safe wrapper: analytics must never break gameplay if the script is blocked.
+function ping(event, data) {
+  try { track(event, data); } catch {}
+}
 import { QUESTION_POOL } from "./questions.js";
 
 // ---------- CONTENT ----------
@@ -131,34 +137,67 @@ const SFX = {
 // ---------- GRID GENERATION (seeded) ----------
 const FILLER = "BCDFGHJKLMNPQRSTVWXZBCDFGHKLMNPRSTKWXZQVJ";
 
-function countOccurrences(rows, word) {
+// Count how many times `word` reads left-to-right (rows) AND top-to-bottom
+// (columns) across the whole grid. Used to guarantee each answer appears
+// exactly once in a valid direction — so the player's only correct first-letter
+// tap is the intended one. (No backwards, no diagonal: indexOf is forward-only.)
+function totalOccurrences(grid, word) {
   let n = 0;
-  for (const row of rows) {
+  for (let l = 0; l < LINES; l++) {
+    const row = grid[l].join("");
     let idx = row.indexOf(word);
     while (idx !== -1) { n++; idx = row.indexOf(word, idx + 1); }
+  }
+  for (let c = 0; c < POSITIONS; c++) {
+    let col = "";
+    for (let l = 0; l < LINES; l++) col += grid[l][c];
+    let idx = col.indexOf(word);
+    while (idx !== -1) { n++; idx = col.indexOf(word, idx + 1); }
   }
   return n;
 }
 
+// The cells a placed word occupies, first letter first.
+// dir "h": (line, col+i). dir "v": (line+i, col). First cell is (line,col) for both.
+function cellsOf(word, pl) {
+  const out = [];
+  for (let i = 0; i < word.length; i++) {
+    out.push(pl.dir === "v" ? [pl.line + i, pl.col] : [pl.line, pl.col + i]);
+  }
+  return out;
+}
+
 function buildBoard(answers, rng) {
-  for (let attempt = 0; attempt < 300; attempt++) {
+  for (let attempt = 0; attempt < 500; attempt++) {
     const grid = Array.from({ length: LINES }, () => Array(POSITIONS).fill(null));
-    const occupied = Array.from({ length: LINES }, () => []);
     const placements = {};
     let ok = true;
     const sorted = [...answers].sort((a, b) => b.length - a.length);
     for (const word of sorted) {
+      const dirs = [];
+      if (word.length <= POSITIONS) dirs.push("h"); // fits a row
+      if (word.length <= LINES) dirs.push("v");      // fits a column (<=5 letters)
+      if (dirs.length === 0) { ok = false; break; }
       let placed = false;
-      for (let tries = 0; tries < 150 && !placed; tries++) {
-        const line = Math.floor(rng() * LINES);
-        const maxStart = POSITIONS - word.length;
-        if (maxStart < 0) break;
-        const start = Math.floor(rng() * (maxStart + 1));
-        const clash = occupied[line].some(([s, e]) => start <= e && start + word.length - 1 >= s);
-        if (clash) continue;
-        for (let i = 0; i < word.length; i++) grid[line][start + i] = word[i];
-        occupied[line].push([start, start + word.length - 1]);
-        placements[word] = { line, start };
+      for (let tries = 0; tries < 250 && !placed; tries++) {
+        // bias toward vertical when allowed, for visible variety on each board
+        const dir = dirs.length === 2 ? (rng() < 0.7 ? "v" : "h") : dirs[0];
+        let line, col, cells;
+        if (dir === "h") {
+          line = Math.floor(rng() * LINES);
+          col = Math.floor(rng() * (POSITIONS - word.length + 1));
+          cells = [];
+          for (let i = 0; i < word.length; i++) cells.push([line, col + i]);
+        } else {
+          line = Math.floor(rng() * (LINES - word.length + 1));
+          col = Math.floor(rng() * POSITIONS);
+          cells = [];
+          for (let i = 0; i < word.length; i++) cells.push([line + i, col]);
+        }
+        // every target cell must be empty (no overlaps)
+        if (cells.some(([l, p]) => grid[l][p] !== null)) continue;
+        cells.forEach(([l, p], i) => { grid[l][p] = word[i]; });
+        placements[word] = { line, col, dir };
         placed = true;
       }
       if (!placed) { ok = false; break; }
@@ -167,8 +206,7 @@ function buildBoard(answers, rng) {
     for (let l = 0; l < LINES; l++)
       for (let p = 0; p < POSITIONS; p++)
         if (grid[l][p] === null) grid[l][p] = FILLER[Math.floor(rng() * FILLER.length)];
-    const rows = grid.map((r) => r.join(""));
-    if (answers.every((w) => countOccurrences(rows, w) === 1)) return { grid, placements };
+    if (answers.every((w) => totalOccurrences(grid, w) === 1)) return { grid, placements };
   }
   return null;
 }
@@ -320,6 +358,7 @@ export default function SpotOn() {
   const startGame = useCallback((gameMode, archiveKey = null) => {
     unlockAudio();
     if (!mutedRef.current) try { SFX.coin(); } catch {}
+    if (gameMode === "daily") ping("daily_started", { game: dailyNumber(todayKey()) });
     setArchKey(archiveKey);
     const seed = gameMode === "daily" ? hashString(`spoton-${todayKey()}`)
       : gameMode === "archive" ? hashString(`spoton-${archiveKey}`)
@@ -383,6 +422,7 @@ export default function SpotOn() {
   const finishGame = (completedAll) => {
     clearInterval(timerRef.current);
     const won = completedAll && solvedRef.current === TOTAL_Q && timeMsRef.current > 0;
+    if (won && mode === "daily") ping("board_run", { game: dailyNumber(todayKey()), secsLeft: Number((timeMsRef.current/1000).toFixed(1)) });
     setRanBoard(won);
     setFinalTimeMs(won || completedAll ? timeMsRef.current : 0);
     if (won) play_("victory");
@@ -427,7 +467,7 @@ export default function SpotOn() {
       if (bonusMs > 0) {
         timeMsRef.current += bonusMs;
         setTimeMs(timeMsRef.current);
-        spawnFloater(placement.line, placement.start, `+${fmtS(bonusMs)} secs`, "good");
+        spawnFloater(placement.line, placement.col, `+${fmtS(bonusMs)} secs`, "good");
       }
     }
     setFound((f) => [...f, answer]);
@@ -462,13 +502,14 @@ export default function SpotOn() {
     if (phase !== "play" || inputLockRef.current) return;
     unlockAudio();
     const p = placement;
-    if (line === p.line && pos === p.start) {
+    if (line === p.line && pos === p.col) {
       setSolved((s) => { solvedRef.current = s + 1; return s + 1; });
       endQuestion(true);
       return;
     }
     play_("wrong");
-    const inside = line === p.line && pos > p.start && pos < p.start + answer.length;
+    const wordCells = cellsOf(answer, p);
+    const inside = wordCells.some(([l, c], i) => i > 0 && l === line && c === pos);
     spawnFloater(line, pos, `−${MISS_PENALTY_MS / 1000} secs`, "bad");
     setFlash(inside ? "Right word — tap the FIRST letter!" : "");
     setMisses((m) => [...m, { line, pos }]);
@@ -535,13 +576,16 @@ export default function SpotOn() {
   const isRevealed = (l, p) => {
     if (!revealWord || !board) return false;
     const pl = board.placements[revealWord.word];
-    return pl && l === pl.line && p >= pl.start && p < pl.start + revealWord.count;
+    if (!pl) return false;
+    const cells = cellsOf(revealWord.word, pl).slice(0, revealWord.count);
+    return cells.some(([cl, cp]) => cl === l && cp === p);
   };
   const isSpent = (l, p) => {
     if (!board) return false;
     return found.some((w) => {
       const pl = board.placements[w];
-      return pl && l === pl.line && p >= pl.start && p < pl.start + w.length;
+      if (!pl) return false;
+      return cellsOf(w, pl).some(([cl, cp]) => cl === l && cp === p);
     });
   };
   const isMiss = (l, p) => misses.some((m) => m.line === l && m.pos === p);
