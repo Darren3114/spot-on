@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#0c1145"/>
+  <rect x="56" y="150" width="400" height="212" rx="28" fill="#090d38" stroke="#3a44a8" stroke-width="8"/>
+  <g font-family="Arial Black, sans-serif" font-weight="900" text-anchor="middle">
+    <text x="256" y="248" font-size="92" fill="#ffd24a">SPOT</text>
+    <text x="256" y="338" font-size="92" fill="#59e8ff">ON!</text>
+  </g>
+</svg>

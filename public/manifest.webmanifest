@@ -1,0 +1,13 @@
+{
+  "name": "SPOT ON!",
+  "short_name": "Spot On!",
+  "description": "A daily word-hunt against the clock. Can you run the board?",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0c1145",
+  "theme_color": "#0c1145",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
